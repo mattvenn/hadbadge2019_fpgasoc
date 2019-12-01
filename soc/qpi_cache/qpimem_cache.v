@@ -1,3 +1,4 @@
+`default_nettype none
 /*verilator tracing_off*/
 /*
  * Copyright (C) 2019  Jeroen Domburg <jeroen@spritesmods.com>
@@ -82,6 +83,9 @@ the other line should be choosen for flush/reload if needed.
 This cache also has a 'flush'-line. If asserted with a valid address and wdata, all lines 
 containing addresses from addr to wdata will be flushed and marked clean. The 'ready' line
 will be low until the end of this operation, similar to a read or write.
+
+A good overview can be found here: https://cseweb.ucsd.edu/classes/su07/cse141/cache-handout.pdf
+
 */
 
 
@@ -281,7 +285,7 @@ always @(*) begin
 end
 
 reg flush_delay_prop;
-reg [64:0] cache_state_ascii;
+(* keep *) reg [64:0] cache_state_ascii;
 
 always @(posedge clk) begin
 	if (rst) begin
@@ -401,5 +405,81 @@ always @(posedge clk) begin
 		end
 	end
 end
+
+`ifdef FORMAL
+    // see https://zipcpu.com/zipcpu/2018/07/13/memories.html for details
+    (* anyconst *) wire [ADDR_WIDTH-1:0] f_addr;
+    reg [32-1:0] f_data;
+    reg f_past_valid = 0;
+
+    // allow solver to choose data and put it at some (constant) address
+  //  initial assume(mem[f_addr] == f_data);
+
+    // assume well behaved master: won't change inputs while waiting for ready
+    initial assume(rst);
+    always @(posedge clk) begin
+        if(rst) begin
+            assume(!ren);
+            assume(!wen);
+        end
+        if(ren && $past(!ready)) begin
+            assume($stable(ren));
+            assume($stable(addr));
+        end
+        if(wen && $past(!ready)) begin
+            assume($stable(wen));
+            assume($stable(addr));
+            assume($stable(wdata));
+        end
+    end
+
+    // memory formal
+    always @(posedge clk) begin
+        f_past_valid <= 1;
+        // if a write happens at the address then update the data
+        if(wen && f_addr == addr)
+            if (wen[0]) f_data[ 7: 0] <= wdata[ 7: 0];
+            if (wen[1]) f_data[15: 8] <= wdata[15: 8];
+            if (wen[2]) f_data[23:16] <= wdata[23:16];
+            if (wen[3]) f_data[31:24] <= wdata[31:24];
+
+        // assert data coming out is good
+        /*
+        if(f_past_valid)
+            if(f_addr == $past(addr) && ready && ren)
+                assert(rdata == $past(f_data));
+            */
+    end
+
+    // cover some operations
+	localparam
+		F_ST_IDLE = 0,
+		F_ST_READ = 1,
+		F_ST_WAIT = 2,
+		F_ST_READY = 3;
+
+    reg [1:0] f_state = F_ST_IDLE;
+
+    always @(posedge clk) begin
+        if(!rst)
+            case(f_state)
+                F_ST_IDLE: begin
+                    if(ren) f_state <= F_ST_READ;
+                    assume(!found_tag);
+                end
+                F_ST_READ:
+                     f_state <= F_ST_WAIT;
+                F_ST_WAIT:
+                    if(ready)
+                        f_state <= F_ST_READY;
+            endcase
+    end
+
+    always @(posedge clk) begin
+        if(f_past_valid) begin
+            cover(f_state == F_ST_READY);
+        end
+    end
+`endif
 
 endmodule
