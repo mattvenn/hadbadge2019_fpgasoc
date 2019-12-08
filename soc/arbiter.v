@@ -136,53 +136,56 @@ end
 
 `ifdef FORMAL
 reg f_past_valid = 0;
-reg [7:0] f_past_counter = 0;
-reg [7:0] f_master_reqs [1:0];
+reg [7:0] f_slave_ready_low = 0;
 reg [7:0] f_transitions = 0;
-
-initial begin 
-    assume(valid == 0);
-	for (i=0; i<MASTER_IFACE_CNT; i=i+1) begin
-        f_master_reqs[i] = 0;
-    end
-end
 
 always @(posedge clk) begin
     f_past_valid <= 1;
-    f_past_counter <= f_past_counter + 1;
-    assume(reset == 0);
 
     // assume well behaved masters: if waiting for a write then don't de-assert valid and don't change addr, data or wen lines
 	for (i=0; i<MASTER_IFACE_CNT; i=i+1) begin
         if(f_past_valid)
-            if($past(valid[i]) && $past(~ready[i])) begin
+            if($past(reset))
+                assume(valid == 0);
+            else if($past(valid[i]) && $past(~ready[i])) begin
                 assume($stable(valid[i]));
                 assume($stable(`SLICE_32(addr,i))); 
                 assume($stable(`SLICE_32(wdata,i)));
                 assume($stable(`SLICE_4(wen,i)));
             end
-        if(valid[i] && ready[i])
-            f_master_reqs[i] <= f_master_reqs[i] + 1;
     end
 
-    // assume well behaved slave
+    // assume well behaved slave doesn't hold ready low for longer than x counts
+    if(!s_ready)
+        f_slave_ready_low <= f_slave_ready_low + 1;
+    assume(f_slave_ready_low < 8);
+
+    // if slave indicates data ready to read then it shouldn't change the data
     if(f_past_valid)
-        // if slave indicates data ready to read then it shouldn't change the data
         if($past(s_ready))
             assume($stable(s_rdata)); 
+   
+    // at reset
+    if(!f_past_valid || $past(reset)) begin
+	   assume(valid == 0);
+    	   assert(s_valid == 0);
+    end
     
+    // slave valid line can only be asserted if master signals are asserted
+    if(valid == 0)
+	    assert(s_valid == 0);
+
     // assert pass through works
-    if(f_past_valid && !reset)
-        if(valid) begin
-            assert(s_addr == `SLICE_32(addr, active_iface));
-            assert(s_wdata == `SLICE_32(wdata, active_iface));
-            assert(s_valid == valid[active_iface]);
-            assert(s_wen == `SLICE_4(wen, active_iface));
-        end
-    
+    if(valid) begin
+        assert(s_addr == `SLICE_32(addr, active_iface));
+        assert(s_wdata == `SLICE_32(wdata, active_iface));
+        assert(s_valid == valid[active_iface]);
+        assert(s_wen == `SLICE_4(wen, active_iface));
+    end
+
     // assert that transition won't happen when one master has control
 	for (i=0; i<MASTER_IFACE_CNT; i=i+1) begin
-        if(f_past_valid && !reset)
+        if(f_past_valid && $past(!reset))
             if( $past(active_iface == i) && $past(valid[i]))
                 assert($stable(active_iface));
     end
