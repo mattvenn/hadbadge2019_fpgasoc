@@ -1,12 +1,12 @@
 [options]
 mode prove 
-append 5
 
 [engines]
 smtbmc
 
 [script]
-read_verilog -formal qpimem_arbiter.v
+read -noverific
+read -formal qpimem_arbiter.v
 prep -top qpimem_arbiter
 
 [files]

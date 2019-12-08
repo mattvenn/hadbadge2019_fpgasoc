@@ -119,33 +119,23 @@ end
 
 `ifdef FORMAL
 reg f_past_valid = 0;
-reg [7:0] f_past_counter = 0;
-reg [7:0] f_master_reqs [1:0];
 reg [7:0] f_transitions = 0;
-
-initial begin 
-    assume(valid == 0);
-	for (i=0; i<MASTER_IFACE_CNT; i=i+1) begin
-        f_master_reqs[i] = 0;
-    end
-end
+reg [7:0] f_slave_not_idle = 0;
 
 always @(posedge clk) begin
     f_past_valid <= 1;
-    f_past_counter <= f_past_counter + 1;
-    assume(reset == 0);
 
     // assume well behaved masters
 	for (i=0; i<MASTER_IFACE_CNT; i=i+1) begin
         if(f_past_valid)
-            if($past(do_read[i] || do_write[i]) && $past(~is_idle[i])) begin
+            if($past(reset))
+                assume(do_read[i] == 0 && do_write[i] == 0);
+            else if($past(do_read[i] || do_write[i]) && $past(~is_idle[i])) begin
                 assume($stable(`SLICE_32(addr,i))); 
                 assume($stable(`SLICE_32(wdata,i)));
                 assume($stable(do_read[i]));
                 assume($stable(do_write[i]));
             end
-        if((do_read[i] || do_write[i]) && is_idle[i])
-            f_master_reqs[i] <= f_master_reqs[i] + 1;
         if(do_read[i])
             assume(!do_write[i]);
         if(do_write[i])
@@ -157,6 +147,18 @@ always @(posedge clk) begin
         // if slave indicates data ready to read then it shouldn't change the data
         if($past(s_next_word))
             assume($stable(s_rdata)); 
+
+    // assume well behaved slave doesn't hold idle high for longer than x counts
+    if(!s_is_idle)
+        f_slave_not_idle <= f_slave_not_idle + 1;
+    assume(f_slave_not_idle < 8);
+
+    // at reset
+    if(!f_past_valid || $past(reset)) begin
+	   assume(!do_read && !do_write);
+       assert(s_do_write == 0);
+       assert(s_do_read == 0);
+    end
     
     // assert pass through works
     if(f_past_valid && !reset)
@@ -170,10 +172,16 @@ always @(posedge clk) begin
     
     // assert that transition won't happen when one master has control
 	for (i=0; i<MASTER_IFACE_CNT; i=i+1) begin
-        if(f_past_valid && !reset)
+        if(f_past_valid && !$past(reset))
             if($past(active_iface == i) && $past(do_write[i] || do_read[i]) && $past(!is_idle[i]))
                 assert($stable(active_iface));
     end
+
+    // slave read/write signals depend on master signals
+    if(!do_write)
+        assert(!s_do_write);
+    if(!do_read)
+        assert(!s_do_read);
 
     // cover a transition
     if(f_past_valid)
