@@ -1,12 +1,13 @@
 [options]
-mode prove 
+mode bmc
 depth 20
 
 [engines]
 smtbmc
 
 [script]
-read_verilog -formal qpimem_cache.v simple_mem.v simple_mem_words.v
+#read -noverific
+read -formal qpimem_cache.v simple_mem.v simple_mem_words.v
 prep -top qpimem_cache
 
 [files]

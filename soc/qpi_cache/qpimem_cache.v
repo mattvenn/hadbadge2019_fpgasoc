@@ -126,6 +126,7 @@ always @(posedge clk)
 		qpi_rdata_r <= qpi_rdata;
 
 //Cache memory, tag memory, flags memory.
+/*
 simple_mem_words #(
 	.WORDS(CACHELINE_CT*CACHELINE_WORDS),
 `ifdef verilator
@@ -140,6 +141,22 @@ simple_mem_words #(
 	.wdata(cachedata_wdata),
 	.rdata(cachedata_rdata)
 );
+*/
+    // put the cache here instead of in external module so I can use formal
+	reg [31:0] mem [0:CACHELINE_CT*CACHELINE_WORDS-1];
+    reg [31:0] cachedata_rdata_mem;
+    assign cachedata_rdata = cachedata_rdata_mem;
+
+	always @(posedge clk) begin
+        if(!rst) begin
+		cachedata_rdata_mem <= mem[cachedata_addr];
+		if (cachedata_wen[0]) mem[cachedata_addr][ 7: 0] <= cachedata_wdata[ 7: 0];
+		if (cachedata_wen[1]) mem[cachedata_addr][15: 8] <= cachedata_wdata[15: 8];
+		if (cachedata_wen[2]) mem[cachedata_addr][23:16] <= cachedata_wdata[23:16];
+		if (cachedata_wen[3]) mem[cachedata_addr][31:24] <= cachedata_wdata[31:24];
+        end
+	end
+
 
 assign rdata = cachedata_rdata;
 wire [CACHE_TAG_BITS-1:0] tag_wdata;
@@ -302,6 +319,7 @@ always @(posedge clk) begin
 		flush_way <= 0;
 		flushing <= 0;
 		flush_delay_prop <= 0;
+        wen_delayed <= 0;
 	end else begin
 		ready <= 0;
 		cache_refill_flag_wen <= 0;
@@ -411,26 +429,29 @@ end
     (* anyconst *) wire [ADDR_WIDTH-1:0] f_addr;
     reg [32-1:0] f_data;
     reg f_past_valid = 0;
+    reg [7:0] f_cover_misses = 0;
     reg [3:0] f_past_wen = 0;
 
     // allow solver to choose data and put it at some (constant) address
     // can't do this because the memories are external
-  //  initial assume(mem[f_addr] == f_data);
+    // also, can't do this because the mem addr needs to be calculated according to cache rules
+    initial assume(mem[f_addr] == f_data);
 
-    // questions
-    // is simultaneous read and write allowed? what does ready mean if so? 
-
-    // assume well behaved master: won't change inputs while waiting for ready
     initial assume(rst);
+
     always @(posedge clk) begin
+        assume(!wen);
         if(rst) begin
             assume(!ren);
             assume(!wen);
         end
-        if(ren) // for now only allow eithe read or write
+        // simultaneous read and write not allowed
+        if(ren)
             assume(!wen);
         if(wen)
             assume(!ren);
+
+        // assume well behaved master: won't change inputs while waiting for ready
         if(ren && $past(!ready)) begin
             assume($stable(ren));
             assume($stable(addr));
@@ -442,6 +463,10 @@ end
         end
     end
 
+    always @(posedge clk)
+        if(f_past_valid)
+            assert(mem[f_addr] == f_data);
+
     // memory formal
     always @(posedge clk) begin
         f_past_valid <= 1;
@@ -451,52 +476,23 @@ end
             if (wen[1]) f_data[15: 8] <= wdata[15: 8];
             if (wen[2]) f_data[23:16] <= wdata[23:16];
             if (wen[3]) f_data[31:24] <= wdata[31:24];
-            f_past_wen <= wen;
         end
 
         // assert data coming out is good
-        if(f_past_valid && f_past_wen)
-            if(f_addr == addr && ready && ren) begin
-                if (f_past_wen[0]) assert(rdata[ 7: 0] == f_data[ 7: 0]);
-                if (f_past_wen[1]) assert(rdata[15: 8] == f_data[15: 8]);
-                if (f_past_wen[2]) assert(rdata[23:16] == f_data[23:16]);
-                if (f_past_wen[3]) assert(rdata[31:24] == f_data[31:24]);
-            end
-    end
-
-    // cover some operations
-	localparam
-		F_ST_IDLE = 0,
-		F_ST_READ = 1,
-		F_ST_WRITE = 2,
-		F_ST_WAIT = 3,
-		F_ST_READY = 4;
-
-    reg [2:0] f_state = F_ST_IDLE;
-
-    always @(posedge clk) begin
-        if(!rst)
-            case(f_state)
-                F_ST_IDLE: begin
-                    if(ren) f_state <= F_ST_READ;
-                    if(wen) f_state <= F_ST_WRITE;
-                    assume(!found_tag);
-                end
-                F_ST_READ:
-                     f_state <= F_ST_WAIT;
-                F_ST_WRITE:
-                     f_state <= F_ST_WAIT;
-                F_ST_WAIT:
-                    if(ready)
-                        f_state <= F_ST_READY;
-            endcase
+        // need to work out the rules for when addr is going to read this address
+        if(f_addr == addr && ready && ren)
+            assert(rdata == f_data);
     end
 
     always @(posedge clk) begin
-        if(f_past_valid) begin
-        //    assume(!ren);
-            cover(f_state == F_ST_READY);
-        end
+        if(rst) begin
+            f_cover_misses <= 0;
+	end else if(($rose(ren) || $rose(wen)) && !found_tag)
+		f_cover_misses <= f_cover_misses + 1;
+    end
+
+    always @(posedge clk) begin
+        cover(f_cover_misses > 4);
     end
 `endif
 
